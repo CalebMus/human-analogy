@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pattern Completion Study</title>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    #exp-container {
+      max-width: 1000px;
+      width: 100%;
+      padding: 0 40px;
+    }
+
+    .slide {
+      color: #666;
+      font-weight: 700;
+      font-size: 26px;
+      text-align: center;
+      line-height: 1.65;
+      padding: 80px 0 60px;
+    }
+
+    .trial-wrap {
+      text-align: center;
+      font-weight: 700;
+      color: #666;
+      padding: 80px 0 60px;
+    }
+
+    .ex-block {
+      font-size: 22px;
+      line-height: 2.3;
+      margin-bottom: 40px;
+    }
+
+    .query-line {
+      font-size: 24px;
+      margin-bottom: 60px;
+    }
+
+    .choices-row {
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      gap: 80px;
+    }
+
+    .choice-col { text-align: center; }
+
+    .choice-key {
+      font-size: 11px;
+      font-weight: 400;
+      color: #bbb;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+
+    .choice-val {
+      font-size: 20px;
+      color: #666;
+      font-weight: 700;
+    }
+
+    .choice-val.selected {
+      color: #111;
+      font-weight: 900;
+      text-decoration: underline;
+    }
+
+    #spacebar-hint {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 12px;
+      font-weight: 400;
+      color: #bbb;
+      letter-spacing: .08em;
+    }
+
+    .walkthrough-desc {
+      margin-top: 48px;
+      font-size: 18px;
+      font-weight: 400;
+      color: #999;
+      line-height: 1.6;
+      text-align: center;
+    }
+
+    #exp-timer {
+      position: fixed;
+      top: 16px;
+      right: 20px;
+      font-size: 14px;
+      font-weight: 700;
+      color: #444;
+      letter-spacing: .04em;
+      background: #fff;
+      border: 1px solid #ddd;
+      padding: 6px 10px;
+      border-radius: 6px;
+      display: none;
+    }
+
+    #loading-screen {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #fff;
+      font-family: system-ui, sans-serif;
+      color: #bbb;
+      z-index: 9999;
+    }
+
+    .fs-btn {
+      display: inline-block;
+      margin-top: 36px;
+      padding: 14px 32px;
+      background: #f0f0f0;
+      border: none;
+      border-radius: 8px;
+      font-size: 18px;
+      font-weight: 700;
+      color: #555;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .fs-btn:hover { background: #e0e0e0; }
+  </style>
+</head>
+<body>
+
+<script>
+  window.EXP_START_TIME = Date.now();
+</script>
+
+<div id="loading-screen">Loading…</div>
+<div id="exp-container" style="display:none"></div>
+<div id="spacebar-hint" style="display:none">Press Enter to continue</div>
+<div id="exp-timer">0:00</div>
+
+<script>
+'use strict';
+
+// ============================================================
+//  CONFIGURATION
+// ============================================================
+const CONFIG = {
+  n_examples: 2,
+  n_per_category: 6,        // 6 × 5 categories = 30 per task
+  max_trials_per_task: 30,
+  tasks: ['norel', 'nomap', 'maprel', 'rerep', 'maprelrerep'],
+  fixation_ms: 400,
+  data_dir: '../problems/Text/sampled/',
+};
+
+// ============================================================
+//  TASK METADATA
+// ============================================================
+const TASK_META = {
+  norel:       { is_category: true  },
+  nomap:       { is_category: true  },
+  maprel:      { is_category: true  },
+  rerep:       { is_category: false },
+  maprelrerep: { is_category: false },
+};
+
+const CATEGORIES = ['lin', 'cat', 'cau', 'alf', 'num'];
+
+// ============================================================
+//  PRACTICE PROBLEMS  (only first is used; threshold 1/1)
+// ============================================================
+const PRACTICE_PROBLEM = {
+  examples: ['1 / 1 / 1', '2 / 2 / 2'],
+  query: '3 / 3 / ?',
+  choices: ['3', '8', 'yellow'],
+  correct_idx: 0,
+};
+
+// ============================================================
+//  UTILITIES
+// ============================================================
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function extractCategory(problemId) {
+  for (const cat of CATEGORIES) {
+    if (problemId.includes(`_${cat}_`)) return cat;
+  }
+  return 'mixed';
+}
+
+function sampleProblems(problems, meta) {
+  const ids = Object.keys(problems);
+  if (meta.is_category) {
+    const bycat = {};
+    for (const cat of CATEGORIES) bycat[cat] = [];
+    for (const id of ids) {
+      const c = extractCategory(id);
+      if (bycat[c]) bycat[c].push(id);
+    }
+    let selected = [];
+    for (const cat of CATEGORIES) {
+      selected = selected.concat(shuffle(bycat[cat]).slice(0, CONFIG.n_per_category));
+    }
+    return selected;
+  }
+  return shuffle(ids).slice(0, CONFIG.max_trials_per_task);
+}
+
+// ============================================================
+//  HTML BUILDERS
+// ============================================================
+function choicesRow(opts, selectedIdx = -1) {
+  const keys = ['F', 'space', 'J'];
+  return `<div class="choices-row">${opts.map((o, i) => `
+    <div class="choice-col">
+      <div class="choice-key">${keys[i]}</div>
+      <div class="choice-val${i === selectedIdx ? ' selected' : ''}">${o}</div>
+    </div>`).join('')}</div>`;
+}
+
+function practiceHTML(prob, selectedIdx = -1) {
+  return `<div class="trial-wrap">
+    <div class="ex-block">${prob.examples.join('<br>')}</div>
+    <div class="query-line">${prob.query}</div>
+    ${choicesRow(prob.choices, selectedIdx)}
+  </div>`;
+}
+
+function trialHTML(problem, answerOpts, selectedIdx = -1) {
+  const exLines = problem.examples
+    .slice(0, CONFIG.n_examples)
+    .map(t => `${t[0]} / ${t[1]} / ${t[2]}`)
+    .join('<br>');
+  const [q0, q1] = problem.query;
+  return `<div class="trial-wrap">
+    <div class="ex-block">${exLines}</div>
+    <div class="query-line">${q0} / ${q1} / ?</div>
+    ${choicesRow(answerOpts, selectedIdx)}
+  </div>`;
+}
+
+// ============================================================
+//  DATA COLLECTION
+// ============================================================
+const expData = [];
+
+function record(obj) {
+  expData.push({ timestamp: Date.now(), elapsed_ms: Date.now() - window.EXP_START_TIME, ...obj });
+}
+
+function exportCSV() {
+  const keys = [...new Set(expData.flatMap(Object.keys))];
+  const rows = [
+    keys.join(','),
+    ...expData.map(row => keys.map(k => JSON.stringify(row[k] ?? '')).join(',')),
+  ];
+  const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `patterns_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ============================================================
+//  EXPERIMENT RUNNER
+// ============================================================
+const container = document.getElementById('exp-container');
+const spacebarHint = document.getElementById('spacebar-hint');
+
+let timeline = [];
+let currentIdx = 0;
+let activeKeyListener = null;
+
+function render(html) {
+  container.innerHTML = html;
+}
+
+function setHint(visible) {
+  spacebarHint.style.display = visible ? 'block' : 'none';
+}
+
+function clearKeys() {
+  if (activeKeyListener) {
+    document.removeEventListener('keydown', activeKeyListener);
+    activeKeyListener = null;
+  }
+}
+
+function listenKeys(fn) {
+  clearKeys();
+  activeKeyListener = fn;
+  document.addEventListener('keydown', activeKeyListener);
+}
+
+function advance() {
+  currentIdx++;
+  if (currentIdx >= timeline.length) {
+    onFinish();
+  } else {
+    timeline[currentIdx].run();
+  }
+}
+
+// ============================================================
+//  NODE FACTORIES
+// ============================================================
+
+function slideNode(html, extraData = {}) {
+  const content = html.trimStart().startsWith('<') ? html : `<div class="slide">${html}</div>`;
+  return {
+    run() {
+      render(content);
+      setHint(true);
+      listenKeys((e) => {
+        if (e.code !== 'Enter') return;
+        e.preventDefault();
+        record({ screen: 'instruction', ...extraData });
+        clearKeys();
+        advance();
+      });
+    },
+  };
+}
+
+function fixationNode() {
+  return {
+    run() {
+      render('<div style="font-size:40px;color:#ccc;text-align:center;padding:120px 0">+</div>');
+      setHint(false);
+      clearKeys();
+      setTimeout(advance, CONFIG.fixation_ms);
+    },
+  };
+}
+
+function fullscreenNode() {
+  return {
+    run() {
+      render(`<div class="slide">
+        Click the button to go fullscreen.<br><br>
+        <button class="fs-btn" id="fs-btn">Go Fullscreen</button>
+      </div>`);
+      setHint(false);
+
+      document.getElementById('fs-btn').addEventListener('click', () => {
+        document.documentElement.requestFullscreen?.().catch(() => {});
+        clearKeys();
+        advance();
+      });
+    },
+  };
+}
+
+function buildTrialNodes(problem, pid, taskName) {
+  const answerOpts = shuffle([...problem.ans_choice]);
+  const correctAns = problem.correct_ans;
+  let chosenIdx = -1;
+
+  const sel = {
+    run() {
+      render(trialHTML(problem, answerOpts));
+      setHint(true);
+      const startTime = Date.now();
+      const keyMap = { KeyF: 0, Space: 1, KeyJ: 2 };
+      listenKeys((e) => {
+        if (e.code === 'Enter') {
+          if (chosenIdx === -1) return;
+          e.preventDefault();
+          const chosen = answerOpts[chosenIdx];
+          record({
+            screen: 'trial',
+            task: taskName,
+            problem_id: pid,
+            category: extractCategory(pid),
+            correct_ans: correctAns,
+            chosen,
+            correct: chosen === correctAns,
+            rt_ms: Date.now() - startTime,
+          });
+          clearKeys();
+          advance();
+          return;
+        }
+        const idx = keyMap[e.code];
+        if (idx === undefined) return;
+        e.preventDefault();
+        chosenIdx = idx;
+        render(trialHTML(problem, answerOpts, chosenIdx));
+      });
+    },
+  };
+
+  return [fixationNode(), sel];
+}
+
+function buildPracticeAttempt() {
+  let chosenIdx = -1;
+
+  const sel = {
+    run() {
+      render(practiceHTML(PRACTICE_PROBLEM));
+      setHint(true);
+      const startTime = Date.now();
+      const keyMap = { KeyF: 0, Space: 1, KeyJ: 2 };
+      listenKeys((e) => {
+        if (e.code === 'Enter') {
+          if (chosenIdx === -1) return;
+          e.preventDefault();
+          const correct = chosenIdx === PRACTICE_PROBLEM.correct_idx;
+          record({
+            screen: 'practice_trial',
+            correct,
+            rt_ms: Date.now() - startTime,
+          });
+          clearKeys();
+          if (correct) {
+            advance();
+          } else {
+            timeline.splice(currentIdx + 1, 0,
+              slideNode("Let's try that again!"),
+              ...buildPracticeAttempt()
+            );
+            advance();
+          }
+          return;
+        }
+        const idx = keyMap[e.code];
+        if (idx === undefined) return;
+        e.preventDefault();
+        chosenIdx = idx;
+        render(practiceHTML(PRACTICE_PROBLEM, chosenIdx));
+      });
+    },
+  };
+
+  return [sel];
+}
+
+// ============================================================
+//  WALKTHROUGH
+// ============================================================
+function buildWalkthroughNodes() {
+  const exLines = 'cat / cat / cat<br>dog / dog / dog';
+  const queryLine = 'bird / bird / ?';
+  const wChoices = ['bird', 'fish', 'red'];
+  let wChosenIdx = -1;
+
+  const step3HTML = (sel = -1) => `<div class="trial-wrap">
+    <div class="ex-block">${exLines}</div>
+    <div class="query-line">${queryLine}</div>
+    ${choicesRow(wChoices, sel)}
+    <div class="walkthrough-desc">Press F, spacebar, or J to select an answer. You can change your mind as many times as you like. Press Enter to submit.</div>
+  </div>`;
+
+  const step1 = {
+    run() {
+      render(`<div class="trial-wrap">
+        <div class="ex-block">${exLines}</div>
+        <div class="walkthrough-desc">Each problem begins with two example rows like these. They show a pattern for you to identify.</div>
+      </div>`);
+      setHint(true);
+      listenKeys((e) => {
+        if (e.code !== 'Enter') return;
+        e.preventDefault();
+        clearKeys();
+        advance();
+      });
+    },
+  };
+
+  const step2 = {
+    run() {
+      render(`<div class="trial-wrap">
+        <div class="ex-block">${exLines}</div>
+        <div class="query-line">${queryLine}</div>
+        <div class="walkthrough-desc">Below the examples is an incomplete row ending in "?". Your job is to figure out what belongs there based on the pattern above.</div>
+      </div>`);
+      setHint(true);
+      listenKeys((e) => {
+        if (e.code !== 'Enter') return;
+        e.preventDefault();
+        clearKeys();
+        advance();
+      });
+    },
+  };
+
+  const step3 = {
+    run() {
+      wChosenIdx = -1;
+      render(step3HTML());
+      setHint(false);
+      const keyMap = { KeyF: 0, Space: 1, KeyJ: 2 };
+      listenKeys((e) => {
+        if (e.code === 'Enter') {
+          if (wChosenIdx === -1) return;
+          e.preventDefault();
+          clearKeys();
+          advance();
+          return;
+        }
+        const idx = keyMap[e.code];
+        if (idx === undefined) return;
+        e.preventDefault();
+        wChosenIdx = idx;
+        render(step3HTML(wChosenIdx));
+      });
+    },
+  };
+
+  return [step1, step2, step3];
+}
+
+// ============================================================
+//  FINISH
+// ============================================================
+function onFinish() {
+  clearInterval(window.EXP_TIMER_INTERVAL);
+  render(
+    '<div class="slide">Good job! You have completed all tasks.<br><br>' +
+    'Thanks again for your participation and have a good day!</div>'
+  );
+  setHint(false);
+  record({ screen: 'end', total_elapsed_ms: Date.now() - window.EXP_START_TIME });
+  exportCSV();
+}
+
+// ============================================================
+//  MAIN INIT
+// ============================================================
+async function init() {
+  const entries = await Promise.all(
+    CONFIG.tasks.map(async task => {
+      const url = `${CONFIG.data_dir}text_${task}_problems.json`;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return [task, await res.json()];
+      } catch (e) {
+        console.warn(`[experiment] could not load ${task}: ${e.message}`);
+        return [task, null];
+      }
+    })
+  );
+
+  const taskData = Object.fromEntries(entries);
+  const loadedTasks = CONFIG.tasks.filter(t => taskData[t] !== null);
+
+  document.getElementById('loading-screen')?.remove();
+
+  if (loadedTasks.length === 0) {
+    const err = document.createElement('div');
+    err.style.cssText = 'font-family:system-ui;padding:48px;max-width:600px;color:#dc2626';
+    err.innerHTML = `
+      <h2>Could not load experiment data</h2>
+      <p>Make sure you are serving this file over HTTP, not <code>file://</code>.</p>
+      <p>Run: <code>python3 -m http.server 8000</code> from the <strong>project1/</strong> folder.</p>`;
+    document.body.appendChild(err);
+    return;
+  }
+
+  container.style.display = 'block';
+
+  // --------------------------------------------------------
+  //  BUILD TIMELINE
+  // --------------------------------------------------------
+  timeline = [];
+
+  // Fullscreen prompt
+  timeline.push(fullscreenNode());
+
+  // Welcome & instructions
+  timeline.push(slideNode('Welcome'));
+  timeline.push(slideNode('Thank you for taking part in this study.'));
+  timeline.push(slideNode('Turn off or remove any distractions such as music, videos, etc.'));
+  timeline.push(slideNode(
+    'This study should take roughly 30 minutes. ' +
+    'It must be completed in one sitting without any interruptions.'
+  ));
+
+  // Walkthrough
+  timeline.push(...buildWalkthroughNodes());
+  timeline.push(slideNode('The real experiment will now begin.'));
+
+  // --------------------------------------------------------
+  //  MAIN TRIALS — all tasks shuffled together
+  // --------------------------------------------------------
+  const allTrialGroups = [];
+
+  for (const taskName of loadedTasks) {
+    const meta = TASK_META[taskName];
+    const selectedIds = sampleProblems(taskData[taskName], meta);
+    for (const pid of selectedIds) {
+      allTrialGroups.push(buildTrialNodes(taskData[taskName][pid], pid, taskName));
+    }
+  }
+
+  for (const nodes of shuffle(allTrialGroups)) {
+    timeline.push(...nodes);
+  }
+
+  // Start timer then kick off
+  document.getElementById('exp-timer').style.display = 'block';
+  window.EXP_TIMER_INTERVAL = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - window.EXP_START_TIME) / 1000);
+    const m = Math.floor(elapsed / 60);
+    const s = String(elapsed % 60).padStart(2, '0');
+    document.getElementById('exp-timer').textContent = `${m}:${s}`;
+  }, 250);
+
+  currentIdx = 0;
+  timeline[0].run();
+}
+
+init();
+</script>
+</body>
+</html>
