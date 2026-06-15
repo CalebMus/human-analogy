@@ -264,12 +264,22 @@ function trialHTML(problem, answerOpts, selectedIdx = -1) {
 }
 
 // ============================================================
+//  PROLIFIC PARAMETERS
+// ============================================================
+const _params = new URLSearchParams(window.location.search);
+const PARTICIPANT = {
+  prolific_pid: _params.get('PROLIFIC_PID') ?? '',
+  study_id:     _params.get('STUDY_ID')     ?? '',
+  session_id:   _params.get('SESSION_ID')   ?? '',
+};
+
+// ============================================================
 //  DATA COLLECTION
 // ============================================================
 const expData = [];
 
 function record(obj) {
-  expData.push({ timestamp: Date.now(), elapsed_ms: Date.now() - window.EXP_START_TIME, ...obj });
+  expData.push({ ...PARTICIPANT, timestamp: Date.now(), elapsed_ms: Date.now() - window.EXP_START_TIME, ...obj });
 }
 
 function exportCSV() {
@@ -388,11 +398,16 @@ function buildTrialNodes(problem, pid, taskName) {
       setHint(true);
       const startTime = Date.now();
       const keyMap = { KeyF: 0, Space: 1, KeyJ: 2 };
+      let firstResponseMs = null;
+      const selectionSequence = [];   // answer text for each distinct selection
+      const selectionTimesMs = [];    // ms from stimulus start for each selection
+
       listenKeys((e) => {
         if (e.code === 'Enter') {
           if (chosenIdx === -1) return;
           e.preventDefault();
           const chosen = answerOpts[chosenIdx];
+          const commitMs = Date.now() - startTime;
           record({
             screen: 'trial',
             task: taskName,
@@ -401,7 +416,12 @@ function buildTrialNodes(problem, pid, taskName) {
             correct_ans: correctAns,
             chosen,
             correct: chosen === correctAns,
-            rt_ms: Date.now() - startTime,
+            first_response_ms: firstResponseMs,
+            commit_ms: commitMs,
+            n_changes: selectionSequence.length - 1,
+            changed: selectionSequence.length > 1,
+            selection_sequence: selectionSequence.join('|'),
+            selection_times_ms: selectionTimesMs.join('|'),
           });
           clearKeys();
           advance();
@@ -410,7 +430,12 @@ function buildTrialNodes(problem, pid, taskName) {
         const idx = keyMap[e.code];
         if (idx === undefined) return;
         e.preventDefault();
+        if (idx === chosenIdx) return;  // same key pressed again — ignore
+        const t = Date.now() - startTime;
+        if (firstResponseMs === null) firstResponseMs = t;
         chosenIdx = idx;
+        selectionSequence.push(answerOpts[idx]);
+        selectionTimesMs.push(t);
         render(trialHTML(problem, answerOpts, chosenIdx));
       });
     },
@@ -428,15 +453,25 @@ function buildPracticeAttempt() {
       setHint(true);
       const startTime = Date.now();
       const keyMap = { KeyF: 0, Space: 1, KeyJ: 2 };
+      let firstResponseMs = null;
+      const selectionSequence = [];
+      const selectionTimesMs = [];
+
       listenKeys((e) => {
         if (e.code === 'Enter') {
           if (chosenIdx === -1) return;
           e.preventDefault();
           const correct = chosenIdx === PRACTICE_PROBLEM.correct_idx;
+          const commitMs = Date.now() - startTime;
           record({
             screen: 'practice_trial',
             correct,
-            rt_ms: Date.now() - startTime,
+            first_response_ms: firstResponseMs,
+            commit_ms: commitMs,
+            n_changes: selectionSequence.length - 1,
+            changed: selectionSequence.length > 1,
+            selection_sequence: selectionSequence.join('|'),
+            selection_times_ms: selectionTimesMs.join('|'),
           });
           clearKeys();
           if (correct) {
@@ -453,7 +488,12 @@ function buildPracticeAttempt() {
         const idx = keyMap[e.code];
         if (idx === undefined) return;
         e.preventDefault();
+        if (idx === chosenIdx) return;
+        const t = Date.now() - startTime;
+        if (firstResponseMs === null) firstResponseMs = t;
         chosenIdx = idx;
+        selectionSequence.push(PRACTICE_PROBLEM.choices[idx]);
+        selectionTimesMs.push(t);
         render(practiceHTML(PRACTICE_PROBLEM, chosenIdx));
       });
     },
@@ -540,15 +580,30 @@ function buildWalkthroughNodes() {
 // ============================================================
 //  FINISH
 // ============================================================
+const PROLIFIC_COMPLETION_URL = 'https://app.prolific.com/submissions/complete?cc=C15MQJBV';
+
 function onFinish() {
   clearInterval(window.EXP_TIMER_INTERVAL);
-  render(
-    '<div class="slide">Good job! You have completed all tasks.<br><br>' +
-    'Thanks again for your participation and have a good day!</div>'
-  );
-  setHint(false);
   record({ screen: 'end', total_elapsed_ms: Date.now() - window.EXP_START_TIME });
   exportCSV();
+
+  let secs = 5;
+  const countdownHTML = () =>
+    `<div class="slide">Thank you for completing the study!<br><br>` +
+    `You will be redirected to Prolific in <strong>${secs}</strong> second${secs !== 1 ? 's' : ''}.</div>`;
+
+  render(countdownHTML());
+  setHint(false);
+
+  const interval = setInterval(() => {
+    secs--;
+    if (secs <= 0) {
+      clearInterval(interval);
+      window.location.href = PROLIFIC_COMPLETION_URL;
+    } else {
+      render(countdownHTML());
+    }
+  }, 1000);
 }
 
 // ============================================================
