@@ -184,6 +184,26 @@ const TASK_META = {
 const CATEGORIES = ['lin', 'cat', 'cau', 'alf', 'num'];
 
 // ============================================================
+//  ATTENTION CHECKS
+// ============================================================
+const ATTENTION_CHECKS = [
+  {
+    id: 'attn_check_1',
+    examples: ['if / you / see', 'this / just / press'],
+    query: 'space / thanks / ?',
+    choices: ['red', 'green', 'yellow'],
+    correct_ans: 'green',
+  },
+  {
+    id: 'attn_check_2',
+    examples: ['this / trial / is', 'a / check / for'],
+    query: 'your / focus / ?',
+    choices: ['good', 'bad', 'worse'],
+    correct_ans: 'good',
+  },
+];
+
+// ============================================================
 //  PRACTICE PROBLEMS  (only first is used; threshold 1/1)
 // ============================================================
 const PRACTICE_PROBLEM = {
@@ -444,6 +464,67 @@ function buildTrialNodes(problem, pid, taskName) {
   return [fixationNode(), sel];
 }
 
+function buildAttentionCheckNodes(check) {
+  let chosenIdx = -1;
+  let firstResponseMs = null;
+  const selectionSequence = [];
+  const selectionTimesMs = [];
+
+  const attnHTML = (sel = -1) => `<div class="trial-wrap">
+    <div class="ex-block">${check.examples.join('<br>')}</div>
+    <div class="query-line">${check.query}</div>
+    ${choicesRow(check.choices, sel)}
+  </div>`;
+
+  const sel = {
+    run() {
+      chosenIdx = -1;
+      firstResponseMs = null;
+      selectionSequence.length = 0;
+      selectionTimesMs.length = 0;
+      render(attnHTML());
+      setHint(true);
+      const startTime = Date.now();
+      const keyMap = { KeyF: 0, Space: 1, KeyJ: 2 };
+      listenKeys((e) => {
+        if (e.code === 'Enter') {
+          if (chosenIdx === -1) return;
+          e.preventDefault();
+          const chosen = check.choices[chosenIdx];
+          record({
+            screen: 'attention_check',
+            problem_id: check.id,
+            correct_ans: check.correct_ans,
+            chosen,
+            correct: chosen === check.correct_ans,
+            first_response_ms: firstResponseMs,
+            commit_ms: Date.now() - startTime,
+            n_changes: selectionSequence.length - 1,
+            changed: selectionSequence.length > 1,
+            selection_sequence: selectionSequence.join('|'),
+            selection_times_ms: selectionTimesMs.join('|'),
+          });
+          clearKeys();
+          advance();
+          return;
+        }
+        const idx = keyMap[e.code];
+        if (idx === undefined) return;
+        e.preventDefault();
+        if (idx === chosenIdx) return;
+        const t = Date.now() - startTime;
+        if (firstResponseMs === null) firstResponseMs = t;
+        chosenIdx = idx;
+        selectionSequence.push(check.choices[idx]);
+        selectionTimesMs.push(t);
+        render(attnHTML(chosenIdx));
+      });
+    },
+  };
+
+  return [fixationNode(), sel];
+}
+
 function buildPracticeAttempt() {
   let chosenIdx = -1;
 
@@ -676,9 +757,15 @@ async function init() {
     }
   }
 
-  for (const nodes of shuffle(allTrialGroups)) {
+  const shuffledGroups = shuffle(allTrialGroups);
+  const check1At = Math.floor(shuffledGroups.length / 3);
+  const check2At = Math.floor(2 * shuffledGroups.length / 3);
+
+  shuffledGroups.forEach((nodes, i) => {
+    if (i === check1At) timeline.push(...buildAttentionCheckNodes(ATTENTION_CHECKS[0]));
+    if (i === check2At) timeline.push(...buildAttentionCheckNodes(ATTENTION_CHECKS[1]));
     timeline.push(...nodes);
-  }
+  });
 
   // Start timer then kick off
   document.getElementById('exp-timer').style.display = 'block';
